@@ -16,6 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+import { addGlobalContextMenuPatch, GlobalContextMenuPatchCallback, removeGlobalContextMenuPatch } from "@api/ContextMenu";
 import { definePluginSettings } from "@api/Settings";
 import { BaseText } from "@components/BaseText";
 import ErrorBoundary from "@components/ErrorBoundary";
@@ -26,7 +27,7 @@ import { Devs, IS_MAC } from "@utils/constants";
 import { Margins } from "@utils/margins";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { React } from "@webpack/common";
+import { Menu, React } from "@webpack/common";
 
 // Undefined on Discord web / Vesktop builds without natives — every call is guarded.
 const Native = VencordNative.pluginHelpers.ExperimentsPlus as PluginNative<typeof import("./native")> | undefined;
@@ -64,6 +65,50 @@ function openPanel(panel: PanelId) {
     Native.openDevTools(panel);
 }
 
+// Discord's staff DevTools menu (wrench icon) is recognised by its top-level
+// entries, since its internal menu id isn't public.
+const DEVTOOLS_MENU_LABELS = ["Experiments", "DCF"];
+let loggedNavId = false;
+
+function collectLabels(children: any, found: Set<string>, depth = 0) {
+    if (children == null || depth > 3) return;
+    const list = Array.isArray(children) ? children : [children];
+    for (const child of list) {
+        if (!child || typeof child !== "object") continue;
+        if (Array.isArray(child)) {
+            collectLabels(child, found, depth);
+            continue;
+        }
+        const label = child.props?.label;
+        if (typeof label === "string") found.add(label);
+        collectLabels(child.props?.children, found, depth + 1);
+    }
+}
+
+const devToolsMenuPatch: GlobalContextMenuPatchCallback = (navId, children) => {
+    const found = new Set<string>();
+    collectLabels(children, found);
+    if (!DEVTOOLS_MENU_LABELS.every(l => found.has(l))) return;
+
+    if (!loggedNavId) {
+        loggedNavId = true;
+        console.log("[ExperimentsPlus] DevTools menu navId:", navId);
+    }
+
+    children.push(
+        <Menu.MenuGroup key="vc-experimentsplus-group">
+            {PANELS.map(p => (
+                <Menu.MenuItem
+                    key={p.id}
+                    id={`vc-experimentsplus-${p.id}`}
+                    label={p.label}
+                    action={() => openPanel(p.id)}
+                />
+            ))}
+        </Menu.MenuGroup>
+    );
+};
+
 const buttonStyle: React.CSSProperties = {
     padding: "6px 14px",
     borderRadius: 6,
@@ -90,10 +135,12 @@ export default definePlugin({
 
     start() {
         Native?.setDefaultPanel(settings.store.defaultPanel);
+        addGlobalContextMenuPatch(devToolsMenuPatch);
     },
 
     stop() {
         Native?.setDefaultPanel("none");
+        removeGlobalContextMenuPatch(devToolsMenuPatch);
     },
 
     // Shows up in the Vencord Toolbox menu (needs the VencordToolbox plugin)
